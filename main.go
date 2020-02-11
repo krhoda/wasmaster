@@ -6,31 +6,45 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"text/template"
+
 	"github.com/krhoda/wasmaster/asset"
+	"github.com/krhoda/wasmaster/tmpstr"
 )
 
 var (
 	npmCmd   = "npm"
+	npxCmd   = "npx"
 	cargoCmd = "cargo"
 	wasmCmd  = "wasm-bindgen"
 
+	projectName = ""
+
 	pathExecList = []string{
 		"npm",
+		"npx",
 		"cargo",
 		"wasm-bindgen",
 	}
 
-	fileTemplateList = []string{
-		"Cargo.toml",
+	fileAssetList = []string{
+		".babelrc",
 		"index.html",
 		"index.js",
 		"lib.rs",
 		"webpack.config.js",
 	}
 
-	templateMap = map[string][]byte{}
+	fileTemplateMap = map[string]string{
+		"Cargo.toml":     tmpstr.CargoToml,
+		"package.json":   tmpstr.PackageJson,
+		"wasm.worker.js": tmpstr.WebWorker,
+	}
+
+	assetMap = map[string][]byte{}
 
 	topLevelDirs = []string{
+		"js",
 		"build",
 		"dist",
 	}
@@ -41,11 +55,10 @@ var (
 	}
 
 	webDevDeps = []string{
-		"babel-core",
+		"@babel/core",
 		"babel-loader",
-		"babel-preset-env",
-		"babel-preset-react",
-		"babel-plugin-syntax-dynamic-import",
+		"@babel/preset-env",
+		"@babel/preset-react",
 		"webpack",
 		"webpack-cli",
 	}
@@ -57,10 +70,10 @@ func preflight() {
 		maybeFailWith(fmt.Sprintf("Could not find required executable on PATH: %s", target), err)
 	}
 
-	for _, template := range fileTemplateList {
-		data, err := asset.Asset(fmt.Sprintf("data/%s", template))
-		maybeFailWith(fmt.Sprintf("Could not find template file: %s", template), err)
-		templateMap[template] = data
+	for _, fileAsset := range fileAssetList {
+		data, err := asset.Asset(fmt.Sprintf("data/%s", fileAsset))
+		maybeFailWith(fmt.Sprintf("Could not find fileAsset file: %s", fileAsset), err)
+		assetMap[fileAsset] = data
 	}
 }
 
@@ -96,38 +109,25 @@ func firstCargo(td string) {
 }
 
 func npmania() {
-	initArgs := []string{"init", "-y"}
-	nInit := makeAndPipeCmd(npmCmd, initArgs)
+	// initArgs := []string{"init", "-y"}
+	// nInit := makeAndPipeCmd(npmCmd, initArgs)
 
-	err := nInit.Run()
-	maybeFailWith("Failed to run NPM init", err)
+	// err := nInit.Run()
+	// maybeFailWith("Failed to run NPM init", err)
 
-	depArgs := append([]string{"install", "--save"}, webDeps...)
-	nDeps := makeAndPipeCmd(npmCmd, depArgs)
+	// depArgs := append([]string{"install", "--save"}, webDeps...)
+	// nDeps := makeAndPipeCmd(npmCmd, depArgs)
+	nArgs := []string{"i"}
+	nDeps := makeAndPipeCmd(npmCmd, nArgs)
 
-	err = nDeps.Run()
+	err := nDeps.Run()
 	maybeFailWith("Failed to save dependecies with NPM.", err)
 
-	devDepArgs := append([]string{"install", "--save-dev"}, webDevDeps...)
-	nDevDeps := makeAndPipeCmd(npmCmd, devDepArgs)
+	// devDepArgs := append([]string{"install", "--save-dev"}, webDevDeps...)
+	// nDevDeps := makeAndPipeCmd(npmCmd, devDepArgs)
 
-	err = nDevDeps.Run()
-	maybeFailWith("Failed to save dev-dependecies with NPM.", err)
-}
-
-func boilerplate() {
-	for filename, contents := range templateMap {
-		switch filename {
-		case ".babelrc", "Cargo.toml", "webpack.config.js":
-			makeFile(filename, contents)
-		case "index.js", "lib.rs":
-			fname := filepath.Join("src", filename)
-			makeFile(fname, contents)
-		case "index.html":
-			fname := filepath.Join("dist", filename)
-			makeFile(fname, contents)
-		}
-	}
+	// err = nDevDeps.Run()
+	// maybeFailWith("Failed to save dev-dependecies with NPM.", err)
 }
 
 func makeFile(name string, contents []byte) {
@@ -141,12 +141,98 @@ func makeFile(name string, contents []byte) {
 	f.Sync()
 }
 
+func makeTemplate(name string, temp *template.Template) {
+	f, err := os.Create(name)
+	maybeFailWith(fmt.Sprintf("Could not create %s", name), err)
+	defer f.Close()
+
+	pn := projectTemplate{
+		ProjectName: projectName,
+	}
+
+	err = temp.Execute(f, pn)
+	maybeFailWith(fmt.Sprintf("Could not write %s", name), err)
+}
+
+func boilerplate() {
+	for filename, contents := range assetMap {
+		switch filename {
+
+		case ".babelrc", "webpack.config.js":
+			log.Println(filename)
+			makeFile(filename, contents)
+
+		case "index.html":
+			fname := filepath.Join("dist", filename)
+			makeFile(fname, contents)
+
+		case "index.js":
+			fname := filepath.Join("js", filename)
+			makeFile(fname, contents)
+
+		case "lib.rs":
+			fname := filepath.Join("src", filename)
+			makeFile(fname, contents)
+		}
+	}
+
+	for filename, temp := range fileTemplateMap {
+		t, err := template.New(filename).Parse(temp)
+		maybeFailWith("Failed to parse %s template", err)
+
+		switch filename {
+		case "Cargo.toml", "package.json":
+			makeTemplate(filename, t)
+		case "wasm.worker.js":
+			fname := filepath.Join("dist", filename)
+			makeTemplate(fname, t)
+		}
+	}
+}
+
+type projectTemplate struct {
+	ProjectName string
+}
+
+// TODO: CHANGE TO PACKAGE JSON TASKS AND RUN:
+func testBuild() {
+	wasmArgs := []string{"build", "--target", "wasm32-unknown-unknown"}
+	wasmBuildCmd := makeAndPipeCmd(cargoCmd, wasmArgs)
+
+	err := wasmBuildCmd.Run()
+	maybeFailWith("Could not run build for WASM with cargo", err)
+
+	bindgenArgs := []string{
+		// TODO: ADD AFTER TEMPLATE.
+		fmt.Sprintf("target/wasm32-unknown-unknown/debug/%s.wasm", projectName),
+		"--no-typescript",
+		"--no-modules",
+		"--out-dir",
+		"dist",
+	}
+	wasmBindCmd := makeAndPipeCmd(wasmCmd, bindgenArgs)
+
+	err = wasmBindCmd.Run()
+	maybeFailWith("Could not run build for WASM with wasm-bindgen", err)
+
+	webpackCmd := makeAndPipeCmd(npxCmd, []string{"webpack"})
+
+	err = webpackCmd.Run()
+	maybeFailWith("Could not run webpack from NPX", err)
+}
+
 func createProject() {
 	createProjectDirectories()
 	log.Println("INITIAL DIRECTORY STRUCTURE COMPLETE. STARTING NPM...")
+
+	boilerplate()
+	log.Println("BOILERPLATE WRITTEN. STARTING BUILD OF TOTAL PROJECT...")
+
 	npmania()
 	log.Println("NPM INIT/DEPS COMPLETE. STARTING BOILERPLATE...")
-	boilerplate()
+
+	// TODO: REPLACE WITH PACKAGE JSON FIDDLING.
+	testBuild()
 }
 
 func main() {
@@ -179,5 +265,6 @@ func main() {
 
 	log.Println("RUST SKELETON PROJECT COMPLETE. STARTING NPM...")
 
+	projectName = td
 	createProject()
 }

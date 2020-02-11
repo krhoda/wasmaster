@@ -1,16 +1,14 @@
-#![feature(proc_macro, wasm_custom_section, wasm_import_module)]
-
 extern crate wasm_bindgen;
 
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 extern "C" {
-    fn alert(s: &str);
-
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
 }
 
 #[wasm_bindgen]
 pub fn big_computation() {
-    alert("Big computation in Rust");
+    log("Big computation in Rust");
 }
